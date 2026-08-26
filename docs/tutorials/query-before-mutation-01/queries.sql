@@ -1,91 +1,147 @@
+
+### `queries.sql`
+
+```sql
 -- Tutorial 2: Query Before Mutation
--- Demo sequence, validated against real AWS account (us-east-1)
--- WIP - mutation payload serialization for put_bucket_encryption is the open blocker
+-- Validated end to end against Google Cloud Storage.
+--
+-- Pattern:
+-- query live state
+-- identify delta
+-- policy gate
+-- mutate
+-- verify convergence
 
--- Prerequisites:
--- 1. AWS credentials in .env with permissions for s3:*, kms:*
--- 2. A customer-managed KMS key in us-east-1
--- 3. stackql v0.10.601 or later
-
--- ============================================================
--- SETUP: Pull AWS provider (once per shell session)
--- ============================================================
-REGISTRY PULL aws;
 
 -- ============================================================
--- STEP 0: Create demo resources (one-time setup for tutorial reader)
+-- SETUP
 -- ============================================================
 
--- Create the test bucket
--- Returns: "The operation was despatched successfully"
-INSERT INTO aws.s3.buckets(bucket, region) 
-SELECT 'stackql-tut2-demo-nirmal-01', 'us-east-1';
+REGISTRY PULL google;
 
--- Create a customer-managed KMS key for the demo
--- Returns: "The operation was despatched successfully"
--- Reader captures the resulting KMS Key ARN for use in the REPLACE below
-INSERT INTO aws.kms.keys(region, Description) 
-SELECT 'us-east-1', 'KMS key for stackql Tutorial 2 S3 encryption demo';
 
 -- ============================================================
--- STEP 1: Query live encryption state (the "query before mutation" step)
+-- STEP 1: QUERY LIVE STATE
 -- ============================================================
 
--- Returns rules column with current encryption configuration
--- Example current state: SSE-S3 (AES256), which does not match SSE-KMS policy
-SELECT * 
-FROM aws.s3.bucket_encryptions 
-WHERE bucket = 'stackql-tut2-demo-nirmal-01' 
-AND region = 'us-east-1';
+-- Replace your-project-id with the Google Cloud project used for the demo.
 
--- Current live output:
--- rules: {"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},...}
+SELECT
+  name,
+  location,
+  encryption
+FROM google.storage.buckets
+WHERE project = 'your-project-id';
 
--- ============================================================
--- STEP 2: Mutate to policy-compliant state (SSE-KMS)
--- ============================================================
 
--- BLOCKER: this REPLACE returns "xml: start tag with no name"
--- Confirmed via SHOW METHODS: put_bucket_encryption is exposed as REPLACE
--- with required params (bucket, ServerSideEncryptionConfiguration, region)
--- Kieran flagged that "some of the serialization stuff is not perfect"
--- Awaiting his input on the expected payload shape
+-- Buckets where encryption is NULL use Google-managed encryption.
+-- For this tutorial, the desired policy is CMEK.
 
--- Attempt A: REPLACE ... SET ... WHERE
--- Returns: xml: start tag with no name
-REPLACE aws.s3.bucket_encryptions 
-SET ServerSideEncryptionConfiguration = 
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"arn:aws:kms:us-east-1:824532806693:key/5784aa16-d7a5-4f78-9372-a85cd7784abc"},"BucketKeyEnabled":true}]}'
-WHERE bucket = 'stackql-tut2-demo-nirmal-01' 
-AND region = 'us-east-1';
+SELECT
+  name,
+  location,
+  encryption
+FROM google.storage.buckets
+WHERE project = 'your-project-id'
+AND encryption IS NULL;
 
--- Attempt B: UPDATE with data__ prefix
--- Returns: no appropriate method = 'update' for resource
-UPDATE aws.s3.bucket_encryptions 
-SET data__ServerSideEncryptionConfiguration = 
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"arn:aws:kms:us-east-1:824532806693:key/5784aa16-d7a5-4f78-9372-a85cd7784abc"},"BucketKeyEnabled":true}]}'
-WHERE bucket = 'stackql-tut2-demo-nirmal-01' 
-AND region = 'us-east-1';
 
 -- ============================================================
--- STEP 3: Verify convergence (re-run STEP 1)
+-- STEP 2: POLICY GATE
 -- ============================================================
 
--- Expected after successful mutation:
--- rules: {"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"arn:aws:kms:us-east-1:..."},...}
+-- Gate 1:
+-- Only operate on buckets in the expected location.
 
-SELECT * 
-FROM aws.s3.bucket_encryptions 
-WHERE bucket = 'stackql-tut2-demo-nirmal-01' 
-AND region = 'us-east-1';
+SELECT
+  name,
+  location,
+  encryption
+FROM google.storage.buckets
+WHERE project = 'your-project-id'
+AND location = 'US'
+AND encryption IS NULL;
+
+
+-- Gate 2:
+-- Count the number of resources that would be mutated.
+--
+-- The automation should stop if this number is higher than
+-- the configured safety threshold.
+
+SELECT COUNT(*)
+FROM google.storage.buckets
+WHERE project = 'your-project-id'
+AND location = 'US'
+AND encryption IS NULL;
+
 
 -- ============================================================
--- CLEANUP (post-tutorial)
+-- STEP 3: MUTATE TO CONVERGE
 -- ============================================================
 
-DELETE FROM aws.s3.buckets 
-WHERE bucket = 'stackql-tut2-demo-nirmal-01' 
-AND region = 'us-east-1';
+-- Apply a customer-managed Cloud KMS key to one non-compliant bucket.
+--
+-- Replace:
+--   demo-app-bucket1
+--   your-project-id
+--   your-ring
+--   your-key
+--
+-- with values from your environment.
 
--- Note: KMS key scheduled for deletion via aws.kms.keys DELETE, 
--- with mandatory 7-30 day pending window
+UPDATE google.storage.buckets
+SET data__encryption =
+  '{"defaultKmsKeyName":"projects/your-project-id/locations/us/keyRings/your-ring/cryptoKeys/your-key"}'
+WHERE bucket = 'demo-app-bucket1';
+
+
+-- Expected result:
+-- The operation was despatched successfully
+
+
+-- ============================================================
+-- STEP 4: VERIFY CONVERGENCE
+-- ============================================================
+
+SELECT
+  name,
+  encryption
+FROM google.storage.buckets
+WHERE bucket = 'demo-app-bucket1';
+
+
+-- Expected state:
+--
+-- encryption should now contain a defaultKmsKeyName similar to:
+--
+-- {
+--   "defaultKmsKeyName":
+--   "projects/your-project-id/locations/us/keyRings/your-ring/cryptoKeys/your-key"
+-- }
+
+
+-- ============================================================
+-- STEP 5: IDEMPOTENCE CHECK
+-- ============================================================
+
+-- Query again for resources that still violate policy.
+--
+-- Once the target bucket has CMEK configured, it should no longer
+-- appear in this result set.
+
+SELECT
+  name,
+  location,
+  encryption
+FROM google.storage.buckets
+WHERE project = 'your-project-id'
+AND location = 'US'
+AND encryption IS NULL;
+
+
+-- If no non-compliant target remains, no UPDATE should run.
+--
+-- This is the key property of the pattern:
+-- every execution starts from live state and mutates only when
+-- the current state differs from policy.

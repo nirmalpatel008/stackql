@@ -1,20 +1,59 @@
-# Tutorial 2: Query Before Mutation (WIP)
+# Tutorial 2: Query Before Mutation
 
-Demo assets for Tutorial 2 of the DevRel campaign.
+Demo assets for the query-before-mutation tutorial.
 
 ## Argument
 
-Agents managing infrastructure need to query live state before mutating, because state files represent intent rather than reality. The execution pattern is: query live state, identify delta, policy gate, mutate, query again, verify.
+Agents managing infrastructure should query live state before mutating.
+
+State files still represent useful intent, but they are not authoritative for what exists in the cloud right now.
+
+The execution pattern is:
+
+1. Query live state
+2. Identify the delta
+3. Apply a policy gate
+4. Mutate only the non-compliant resources
+5. Query again to verify convergence
+
+Correctness comes from querying live state before acting.
+
+Safety comes from bounded execution through policy gates such as location locks, resource count caps, budget ceilings, and allowlists.
 
 ## Demo scenario
 
-AWS S3 encryption policy: every bucket managed by the agent must use SSE-KMS with a customer-managed key. Demo shows detection of SSE-S3 default, mutation to SSE-KMS, and convergence verification.
+The demo uses Google Cloud Storage.
 
-## Status
+Policy:
 
-- Read path validated (SELECT on aws.s3.bucket_encryptions works)
-- Test bucket and KMS key created successfully via stackql
-- Mutation path blocked: REPLACE on aws.s3.bucket_encryptions returns "xml: start tag with no name"
-- Awaiting input on expected payload shape for put_bucket_encryption
+Every bucket managed by the agent should use a customer-managed Cloud KMS key.
 
-See queries.sql for the full sequence with commented notes on what works and what does not.
+The demo starts with buckets using Google-managed encryption, represented by `encryption = null`.
+
+The agent:
+
+1. Queries the current bucket state
+2. Identifies buckets without CMEK
+3. Checks location and count policy gates
+4. Updates the bucket encryption configuration
+5. Queries again to confirm convergence
+6. Skips mutation on subsequent runs when the resource already matches policy
+
+## Requirements
+
+- Docker
+- Google Cloud project
+- Credentials that can read and update Cloud Storage buckets
+- Existing Cloud KMS key
+- stackql
+
+## Provider
+
+The demo uses:
+
+`google.storage.buckets`
+
+The Google provider is pulled with:
+
+```sql
+REGISTRY PULL google;
