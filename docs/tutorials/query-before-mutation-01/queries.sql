@@ -1,7 +1,3 @@
-
-### `queries.sql`
-
-```sql
 -- Tutorial 2: Query Before Mutation
 -- Validated end to end against Google Cloud Storage.
 --
@@ -17,7 +13,7 @@
 -- SETUP
 -- ============================================================
 
-REGISTRY PULL google;
+REGISTRY PULL google v26.07.00432;
 
 
 -- ============================================================
@@ -125,11 +121,6 @@ WHERE bucket = 'demo-app-bucket1';
 -- STEP 5: IDEMPOTENCE CHECK
 -- ============================================================
 
--- Query again for resources that still violate policy.
---
--- Once the target bucket has CMEK configured, it should no longer
--- appear in this result set.
-
 SELECT
   name,
   location,
@@ -140,8 +131,9 @@ AND location = 'US'
 AND encryption IS NULL;
 
 
--- If no non-compliant target remains, no UPDATE should run.
+-- Once the target bucket has CMEK configured, it should no longer
+-- appear in this result set.
 --
--- This is the key property of the pattern:
--- every execution starts from live state and mutates only when
+-- If no non-compliant target remains, no UPDATE should run.
+-- Every execution starts from live state and mutates only when
 -- the current state differs from policy.
